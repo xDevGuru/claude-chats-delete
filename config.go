@@ -102,8 +102,20 @@ const (
 	recordSummary     = "summary"
 )
 
+// userHomeDir returns the user's home directory. Checks HOME environment variable
+// first, falling back to os.UserHomeDir() for cross-platform compatibility (e.g. Windows).
+func userHomeDir() string {
+	if h := os.Getenv("HOME"); h != "" {
+		return h
+	}
+	if h, err := os.UserHomeDir(); err == nil {
+		return h
+	}
+	return ""
+}
+
 var (
-	configPath     = filepath.Join(os.Getenv("HOME"), ".config", "claude-chats", "config.json")
+	configPath     = filepath.Join(userHomeDir(), ".config", "claude-chats", "config.json")
 	claudeDir      string
 	projectsDir    string
 	debugDir       string
@@ -186,7 +198,7 @@ func expandHome(path string) string {
 		return ""
 	}
 	if strings.HasPrefix(path, "~") {
-		return filepath.Join(os.Getenv("HOME"), path[1:])
+		return filepath.Join(userHomeDir(), path[1:])
 	}
 	return filepath.Clean(path)
 }
@@ -194,7 +206,7 @@ func expandHome(path string) string {
 // defaultClaudeDir is where Claude Code keeps its data unless CLAUDE_CONFIG_DIR
 // says otherwise.
 func defaultClaudeDir() string {
-	return filepath.Join(os.Getenv("HOME"), claudeDirName)
+	return filepath.Join(userHomeDir(), claudeDirName)
 }
 
 // systemClaudeDir is the directory the current environment points at: the

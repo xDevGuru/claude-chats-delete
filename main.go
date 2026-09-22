@@ -10,6 +10,11 @@ import (
 )
 
 func main() {
+	// Clean up any stale .old binary left by Windows updater
+	if exe, err := os.Executable(); err == nil {
+		_ = os.Remove(exe + ".old")
+	}
+
 	// Parse command-line flags
 	updateFlag := flag.Bool("update", false, "Check for updates and install if available")
 	versionFlag := flag.Bool("version", false, "Show current version")

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 	"syscall"
@@ -15,8 +16,8 @@ import (
 )
 
 const (
-	CurrentVersion = "0.3.12"
-	GitHubAPIURL   = "https://api.github.com/repos/ataleckij/claude-chats-delete/releases/latest"
+	CurrentVersion    = "0.3.13"
+	DefaultGitHubRepo = "xDevGuru/claude-chats-delete"
 
 	// Network timeouts. The checksums file is a few hundred bytes; the binary is
 	// several megabytes and may come over a slow link, so it gets a wider budget.
@@ -28,6 +29,17 @@ const (
 	// makes truncation detectable instead of silently accepted.
 	checksumsMaxBytes = 1 << 20
 )
+
+func getGitHubRepo() string {
+	if repo := os.Getenv("CLAUDE_CHATS_UPDATE_REPO"); repo != "" {
+		return repo
+	}
+	return DefaultGitHubRepo
+}
+
+func gitHubAPIURL() string {
+	return fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", getGitHubRepo())
+}
 
 // GitHubRelease represents the GitHub API response for a release
 type GitHubRelease struct {
@@ -49,7 +61,7 @@ func shouldCheckUpdate(lastCheck int64, intervalHours int) bool {
 // Returns the new version string (without 'v' prefix) if update is available, empty string otherwise
 func checkForUpdate() string {
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(GitHubAPIURL)
+	resp, err := client.Get(gitHubAPIURL())
 	if err != nil {
 		return "" // Silently fail on network errors
 	}
@@ -128,11 +140,24 @@ func promptAndUpdate(newVersion string) bool {
 			}
 
 			// Replace current process with new version (automatic restart)
-			// This preserves PID and doesn't require manual restart
-			if err := syscall.Exec(exePath, os.Args, os.Environ()); err != nil {
-				fmt.Printf("Failed to restart automatically: %v\n", err)
-				fmt.Println("Please restart claude-chats manually to use the new version.")
+			// On Unix this preserves PID with syscall.Exec.
+			// On Windows, syscall.Exec is unsupported so we start the process and exit.
+			if runtime.GOOS == "windows" {
+				cmd := exec.Command(exePath, os.Args[1:]...)
+				cmd.Stdin = os.Stdin
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				if err := cmd.Start(); err != nil {
+					fmt.Printf("Failed to restart automatically: %v\n", err)
+					fmt.Println("Please restart claude-chats manually to use the new version.")
+				}
 				os.Exit(0)
+			} else {
+				if err := syscall.Exec(exePath, os.Args, os.Environ()); err != nil {
+					fmt.Printf("Failed to restart automatically: %v\n", err)
+					fmt.Println("Please restart claude-chats manually to use the new version.")
+					os.Exit(0)
+				}
 			}
 		}
 	}
@@ -169,7 +194,7 @@ func parseChecksum(content, binaryName string) (string, error) {
 // fetchChecksum downloads the release checksums file and returns the expected
 // SHA-256 for binaryName.
 func fetchChecksum(version, binaryName string) (string, error) {
-	url := fmt.Sprintf("https://github.com/ataleckij/claude-chats-delete/releases/download/v%s/checksums.txt", version)
+	url := fmt.Sprintf("https://github.com/%s/releases/download/v%s/checksums.txt", getGitHubRepo(), version)
 	client := &http.Client{Timeout: checksumFetchTimeout}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -199,6 +224,9 @@ func downloadAndInstall(version string) error {
 	goos := runtime.GOOS
 	goarch := runtime.GOARCH
 	binaryName := fmt.Sprintf("claude-chats-%s-%s", goos, goarch)
+	if goos == "windows" {
+		binaryName += ".exe"
+	}
 
 	// Fetch the expected digest first: without it the download cannot be trusted
 	// and there is no point transferring the binary.
@@ -208,7 +236,7 @@ func downloadAndInstall(version string) error {
 	}
 
 	// Download URL
-	url := fmt.Sprintf("https://github.com/ataleckij/claude-chats-delete/releases/download/v%s/%s", version, binaryName)
+	url := fmt.Sprintf("https://github.com/%s/releases/download/v%s/%s", getGitHubRepo(), version, binaryName)
 
 	// Download to temporary file
 	tmpFile, err := os.CreateTemp("", "claude-chats-update-*")
@@ -257,6 +285,22 @@ func downloadAndInstall(version string) error {
 	backupPath := exePath + ".backup"
 	if err := copyFile(exePath, backupPath); err != nil {
 		return fmt.Errorf("failed to backup current binary: %w", err)
+	}
+
+	if runtime.GOOS == "windows" {
+		// On Windows, a running executable cannot be overwritten or removed directly,
+		// but it can be renamed to a temporary name while running.
+		oldPath := exePath + ".old"
+		_ = os.Remove(oldPath)
+		if err := os.Rename(exePath, oldPath); err != nil {
+			return fmt.Errorf("failed to rename old binary: %w", err)
+		}
+		if err := copyFile(tmpPath, exePath); err != nil {
+			_ = os.Rename(oldPath, exePath)
+			return fmt.Errorf("failed to install new binary: %w", err)
+		}
+		_ = os.Remove(backupPath)
+		return nil
 	}
 
 	// Try atomic rename first (works for same-device and avoids "text file busy")

@@ -77,6 +77,10 @@ This will:
 
 **Requirements:** curl or wget (usually pre-installed on Linux/macOS)
 
+### Windows (Pre-built binary)
+
+Download `claude-chats-windows-amd64.exe` from the [Releases](https://github.com/xDevGuru/claude-chats-delete/releases) page and run it in your terminal (PowerShell, Command Prompt, or Windows Terminal).
+
 ### Build from Source
 
 See [docs/install-from-source.md](docs/install-from-source.md) for manual build instructions (requires Go 1.21+).
