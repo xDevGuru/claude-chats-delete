@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 	"syscall"
@@ -128,11 +129,24 @@ func promptAndUpdate(newVersion string) bool {
 			}
 
 			// Replace current process with new version (automatic restart)
-			// This preserves PID and doesn't require manual restart
-			if err := syscall.Exec(exePath, os.Args, os.Environ()); err != nil {
-				fmt.Printf("Failed to restart automatically: %v\n", err)
-				fmt.Println("Please restart claude-chats manually to use the new version.")
+			// On Unix this preserves PID with syscall.Exec.
+			// On Windows, syscall.Exec is unsupported so we start the process and exit.
+			if runtime.GOOS == "windows" {
+				cmd := exec.Command(exePath, os.Args[1:]...)
+				cmd.Stdin = os.Stdin
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				if err := cmd.Start(); err != nil {
+					fmt.Printf("Failed to restart automatically: %v\n", err)
+					fmt.Println("Please restart claude-chats manually to use the new version.")
+				}
 				os.Exit(0)
+			} else {
+				if err := syscall.Exec(exePath, os.Args, os.Environ()); err != nil {
+					fmt.Printf("Failed to restart automatically: %v\n", err)
+					fmt.Println("Please restart claude-chats manually to use the new version.")
+					os.Exit(0)
+				}
 			}
 		}
 	}
@@ -199,6 +213,9 @@ func downloadAndInstall(version string) error {
 	goos := runtime.GOOS
 	goarch := runtime.GOARCH
 	binaryName := fmt.Sprintf("claude-chats-%s-%s", goos, goarch)
+	if goos == "windows" {
+		binaryName += ".exe"
+	}
 
 	// Fetch the expected digest first: without it the download cannot be trusted
 	// and there is no point transferring the binary.
@@ -257,6 +274,22 @@ func downloadAndInstall(version string) error {
 	backupPath := exePath + ".backup"
 	if err := copyFile(exePath, backupPath); err != nil {
 		return fmt.Errorf("failed to backup current binary: %w", err)
+	}
+
+	if runtime.GOOS == "windows" {
+		// On Windows, a running executable cannot be overwritten or removed directly,
+		// but it can be renamed to a temporary name while running.
+		oldPath := exePath + ".old"
+		_ = os.Remove(oldPath)
+		if err := os.Rename(exePath, oldPath); err != nil {
+			return fmt.Errorf("failed to rename old binary: %w", err)
+		}
+		if err := copyFile(tmpPath, exePath); err != nil {
+			_ = os.Rename(oldPath, exePath)
+			return fmt.Errorf("failed to install new binary: %w", err)
+		}
+		_ = os.Remove(backupPath)
+		return nil
 	}
 
 	// Try atomic rename first (works for same-device and avoids "text file busy")
